@@ -1,4 +1,7 @@
-fastapi[stardand]
-uvicorn
-pytest
-httpx
+Package             Version
+------------------- -------
+django-filter       25.2
+djangorestframework 3.16.1
+Markdown            3.10
+pip                 23.0.1
+setuptools          65.5.0
