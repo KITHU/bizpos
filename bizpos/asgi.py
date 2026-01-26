@@ -1,5 +1,5 @@
 """
-ASGI config for BizPos project.
+ASGI config for bizpos project.
 
 It exposes the ASGI callable as a module-level variable named ``application``.
 
