@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from django.db.models import Sum
+from typing import Union
 from .models import Category, Product, Stock
 from .stock_serializer import StockSerializer
 
@@ -42,21 +43,21 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             'is_low_stock', 'discounted_price', 'category_name', 'stock_entries'
         ]
 
-    def get_total_stock(self, obj):
+    def get_total_stock(self, obj: Product) -> int:
         return obj.stock_entries.filter(is_active=True).aggregate(
             total=Sum('quantity')
         )['total'] or 0
 
-    def get_profit_margin(self, obj):
+    def get_profit_margin(self, obj: Product) -> float:
         return obj.profit_margin
 
-    def get_is_low_stock(self, obj):
+    def get_is_low_stock(self, obj: Product) -> bool:
         return obj.is_low_stock
 
-    def get_available_stock(self, obj):
+    def get_available_stock(self, obj: Product) -> int:
         return obj.available_stock
 
-    def get_discounted_price(self, obj):
+    def get_discounted_price(self, obj: Product) -> Union[int, float]:
         return obj.discounted_price
 
 
@@ -76,11 +77,11 @@ class ProductListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['category_name', 'total_stock', 'is_low_stock', 'discounted_price']
 
-    def get_is_low_stock(self, obj):
+    def get_is_low_stock(self, obj: Product) -> bool:
         """Return True if product quantity is below reorder level"""
         return obj.is_low_stock
 
-    def get_discounted_price(self, obj):
+    def get_discounted_price(self, obj: Product) -> Union[int, float]:
         """Return retail price after discount (if any)"""
         return obj.discounted_price
 

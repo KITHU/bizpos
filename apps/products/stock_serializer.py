@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from typing import Optional
 from .models import Stock
 
 
@@ -22,10 +23,10 @@ class StockSerializer(serializers.ModelSerializer):
             'is_expired', 'days_to_expiry', 'created_at', 'updated_at'
         ]
 
-    def get_is_expired(self, obj):
+    def get_is_expired(self, obj: Stock) -> bool:
         """Return True if this stock batch is expired"""
         return obj.is_expired
 
-    def get_days_to_expiry(self, obj):
+    def get_days_to_expiry(self, obj: Stock) -> Optional[int]:
         """Return number of days until expiry (None if unknown)"""
         return obj.days_to_expiry
