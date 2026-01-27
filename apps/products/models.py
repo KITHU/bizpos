@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 class ProductSKUSequence(models.Model):
     """Stores the last sequence number used for each SKU prefix."""
-    prefix = models.CharField(max_length=10, unique=True)  # e.g., "ELE-SP"
+    prefix = models.CharField(max_length=15, unique=True)  # e.g., "ELE-SP"
     last_number = models.PositiveIntegerField(default=0)
 
     def __str__(self):
@@ -29,7 +29,12 @@ def generate_sku(category_name="GEN", product_name="PRD"):
         words = name.split()
         first = words[0][:3].upper()
         second = words[1][:2].upper() if len(words) > 1 else ''
-        return (first + second).ljust(3, 'X')  # pad to at least 3 letters
+        result = first + second
+        # Ensure exactly 3 characters
+        if len(result) > 3:
+            return result[:3]
+        else:
+            return result.ljust(3, 'X')
 
     cat_prefix = prefix(category_name)
     prod_abbr = prefix(product_name)
@@ -75,11 +80,11 @@ class Product(TimestampedModel):
     """Product master data with pricing, inventory, and settings."""
     # Identifiers
     sku = models.CharField(
-        max_length=100,
-        unique=True,
-        db_index=True,
+        max_length=20,  # Allow longer manual SKUs if needed
+        unique=True, 
+        db_index=True, 
         blank=True,
-        help_text="Internal Stock Keeping Unit - auto-generated if not provided"
+        help_text="Internal Stock Keeping Unit - auto-generated format: XXX-XXX-0001 (12 chars)"
     )
     barcode = models.CharField(
         max_length=100,
@@ -200,7 +205,12 @@ class Product(TimestampedModel):
             words = name.split()
             first = words[0][:3].upper()
             second = words[1][:2].upper() if len(words) > 1 else ''
-            return (first + second).ljust(3, 'X')
+            result = first + second
+            # Ensure exactly 3 characters
+            if len(result) > 3:
+                return result[:3]
+            else:
+                return result.ljust(3, 'X')
 
         cat_prefix = prefix(category_name)
         prod_abbr = prefix(product_name)

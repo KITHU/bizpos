@@ -28,7 +28,7 @@ class ProductSKUTestCase(TestCase):
 
     def test_manual_sku(self):
         """Test that manual SKU is preserved"""
-        manual_sku = "MANUAL-SKU-001"
+        manual_sku = "MAN-SKU-0001"  # 12 characters, follows our format
         product = Product.objects.create(
             sku=manual_sku,
             name="Test Product",
