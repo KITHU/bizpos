@@ -1,6 +1,7 @@
 from django.db import models, transaction
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.contrib.auth.models import User
 import uuid
 from datetime import datetime
 from .constants import UNIT_CHOICES
@@ -150,12 +151,32 @@ class Product(TimestampedModel):
 
     def save(self, *args, **kwargs):
         """Override save to auto-generate SKU if not provided."""
+        # Only auto-update quantity if this is a new product or if explicitly requested
+        update_quantity = kwargs.pop('update_quantity', self.pk is None)
+        
         if not self.sku:
             self.sku = generate_sku(
                 category_name=self.category.name if self.category else "GEN",
                 product_name=self.name
             )
         super().save(*args, **kwargs)
+        
+        # Update quantity after saving (only for new products by default)
+        if update_quantity:
+            self.update_quantity_from_stock()
+
+    def update_quantity_from_stock(self):
+        """Update product quantity based on active stock entries."""
+        from django.db.models import Sum
+        total = self.stock_entries.filter(is_active=True).aggregate(
+            total=Sum('quantity')
+        )['total'] or 0
+        
+        if self.quantity != total:
+            # Use update to avoid triggering save() again and prevent recursion
+            Product.objects.filter(pk=self.pk).update(quantity=total)
+            # Refresh the instance to reflect the updated quantity
+            self.refresh_from_db(fields=['quantity'])
 
     def clean(self):
         """Validate pricing hierarchy and non-negative prices."""
@@ -224,6 +245,151 @@ class Product(TimestampedModel):
 
         return f"{sku_prefix}-{str(next_number).zfill(4)}"
 
+    def add_stock(self, quantity, unit_cost, batch_no=None, expiry_date=None, 
+                  location=None, reference="", note=""):
+        """Add stock with automatic movement tracking."""
+        from django.utils import timezone
+        
+        if batch_no is None:
+            batch_no = f"BATCH-{timezone.now().strftime('%Y%m%d-%H%M%S')}"
+        
+        with transaction.atomic():
+            # Create or update stock entry
+            stock, created = Stock.objects.get_or_create(
+                product=self,
+                batch_no=batch_no,
+                defaults={
+                    'quantity': 0,
+                    'unit_cost': unit_cost,
+                    'expiry_date': expiry_date,
+                    'location': location or '',
+                }
+            )
+            
+            # Don't update stock.quantity here - let StockMovement.save() handle it
+            # This prevents double-counting
+            
+            # Create movement record - this will update stock.quantity automatically
+            from django.apps import apps
+            StockMovement = apps.get_model('products', 'StockMovement')
+            StockMovement.objects.create(
+                product=self,
+                stock=stock,
+                movement_type='IN',
+                quantity=quantity,
+                unit_cost=unit_cost,
+                reference=reference,
+                note=note or f"Stock added - Batch: {batch_no}"
+            )
+            
+            # Refresh stock to get updated quantity
+            stock.refresh_from_db()
+            return stock
+
+    def remove_stock(self, quantity, reference="", note="", use_fifo=True):
+        """Remove stock with automatic movement tracking using FIFO."""
+        if quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        
+        remaining_to_remove = quantity
+        movements_created = []
+        
+        with transaction.atomic():
+            # Get stock entries to remove from (FIFO order)
+            if use_fifo:
+                stock_entries = self.stock_entries.filter(
+                    is_active=True, 
+                    quantity__gt=0
+                ).order_by('expiry_date', 'created_at')
+            else:
+                stock_entries = self.stock_entries.filter(
+                    is_active=True, 
+                    quantity__gt=0
+                ).order_by('-created_at')
+            
+            for stock in stock_entries:
+                if remaining_to_remove <= 0:
+                    break
+                
+                # Calculate how much to remove from this batch
+                remove_from_batch = min(remaining_to_remove, stock.quantity)
+                
+                # Create movement record
+                from django.apps import apps
+                StockMovement = apps.get_model('products', 'StockMovement')
+                movement = StockMovement.objects.create(
+                    product=self,
+                    stock=stock,
+                    movement_type='OUT',
+                    quantity=-remove_from_batch,  # Negative for OUT
+                    unit_cost=stock.unit_cost,
+                    reference=reference,
+                    note=note or f"Stock removed - Batch: {stock.batch_no}"
+                )
+                movements_created.append(movement)
+                
+                remaining_to_remove -= remove_from_batch
+            
+            if remaining_to_remove > 0:
+                raise ValueError(f"Insufficient stock. Requested: {quantity}, Available: {quantity - remaining_to_remove}")
+            
+            return movements_created
+
+    def adjust_stock(self, new_total_quantity, reference="", note=""):
+        """Adjust total stock to a specific quantity."""
+        current_quantity = self.quantity
+        difference = new_total_quantity - current_quantity
+        
+        if difference == 0:
+            return None
+        
+        with transaction.atomic():
+            # For adjustments, we need to update stock batches
+            # The movement will be created but won't auto-update stock since stock=None
+            
+            if difference > 0:
+                # Positive adjustment - add to most recent batch or create new one
+                recent_stock = self.stock_entries.filter(is_active=True).order_by('-created_at').first()
+                
+                from django.apps import apps
+                StockMovement = apps.get_model('products', 'StockMovement')
+                
+                if recent_stock:
+                    # Create movement linked to existing batch
+                    movement = StockMovement.objects.create(
+                        product=self,
+                        stock=recent_stock,
+                        movement_type='ADJUST',
+                        quantity=difference,
+                        unit_cost=recent_stock.unit_cost,
+                        reference=reference,
+                        note=note or f"Stock adjustment: {current_quantity} → {new_total_quantity}"
+                    )
+                else:
+                    # Create new adjustment batch with movement
+                    adj_stock = Stock.objects.create(
+                        product=self,
+                        batch_no=f"ADJ-{timezone.now().strftime('%Y%m%d-%H%M%S')}",
+                        quantity=0,  # Start at 0, movement will update it
+                        unit_cost=self.unit_cost,
+                    )
+                    movement = StockMovement.objects.create(
+                        product=self,
+                        stock=adj_stock,
+                        movement_type='ADJUST',
+                        quantity=difference,
+                        unit_cost=self.unit_cost,
+                        reference=reference,
+                        note=note or f"Stock adjustment: {current_quantity} → {new_total_quantity}"
+                    )
+            else:
+                # Negative adjustment - remove using FIFO
+                # remove_stock creates its own movements
+                self.remove_stock(abs(difference), reference=reference, note=note or "Stock adjustment")
+                movement = None
+            
+            return movement
+
 
 class Stock(TimestampedModel):
     """Simple stock tracking with batch and expiry information."""
@@ -248,6 +414,24 @@ class Stock(TimestampedModel):
             models.CheckConstraint(check=models.Q(unit_cost__gte=0), name='stock_unit_cost_non_negative'),
         ]
 
+    def save(self, *args, **kwargs):
+        """Override save to update product quantity only when not called from StockMovement."""
+        # Check if this save is being called from a StockMovement operation
+        skip_product_update = kwargs.pop('skip_product_update', False)
+        
+        super().save(*args, **kwargs)
+        
+        # Only update product quantity if not called from StockMovement
+        if not skip_product_update:
+            self.product.update_quantity_from_stock()
+
+    def delete(self, *args, **kwargs):
+        """Override delete to update product quantity."""
+        product = self.product
+        super().delete(*args, **kwargs)
+        # Update the related product's quantity after deletion
+        product.update_quantity_from_stock()
+
     def __str__(self):
         expiry_str = f" | Exp: {self.expiry_date}" if self.expiry_date else ""
         return f"{self.product.name} - Batch: {self.batch_no} ({self.quantity}){expiry_str}"
@@ -264,3 +448,115 @@ class Stock(TimestampedModel):
             return None
         delta = self.expiry_date - timezone.now().date()
         return delta.days
+
+
+class StockMovement(TimestampedModel):
+    """Track all stock movements for audit trail and inventory management."""
+    
+    # Movement Types
+    IN = 'IN'
+    OUT = 'OUT'
+    ADJUST = 'ADJUST'
+    TRANSFER = 'TRANSFER'
+    RETURN = 'RETURN'
+    DAMAGE = 'DAMAGE'
+    
+    MOVEMENT_TYPE_CHOICES = [
+        (IN, 'Stock In'),
+        (OUT, 'Stock Out'),
+        (ADJUST, 'Adjustment'),
+        (TRANSFER, 'Transfer'),
+        (RETURN, 'Return'),
+        (DAMAGE, 'Damage/Loss'),
+    ]
+    
+    # Core fields
+    product = models.ForeignKey(
+        Product, 
+        on_delete=models.CASCADE, 
+        related_name='movements'
+    )
+    stock = models.ForeignKey(
+        Stock,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='movements',
+        help_text="Related stock batch (if applicable)"
+    )
+    
+    # Movement details
+    movement_type = models.CharField(max_length=10, choices=MOVEMENT_TYPE_CHOICES)
+    quantity = models.IntegerField(help_text="Positive for IN, negative for OUT")
+    unit_cost = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        null=True, 
+        blank=True,
+        help_text="Cost per unit for this movement"
+    )
+    
+    # Reference and tracking
+    reference = models.CharField(
+        max_length=100, 
+        blank=True,
+        help_text="Invoice no, order id, POS transaction, etc."
+    )
+    note = models.TextField(blank=True, help_text="Additional notes or reason")
+    
+    # Optional user tracking (if you have user authentication)
+    # user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['product', 'movement_type']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['product', 'created_at']),
+            models.Index(fields=['movement_type', 'created_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=~models.Q(quantity=0),
+                name='movement_quantity_not_zero'
+            ),
+        ]
+
+    def clean(self):
+        """Validate movement data."""
+        super().clean()
+        
+        # Validate quantity based on movement type
+        if self.movement_type == self.IN and self.quantity <= 0:
+            raise ValidationError("Stock IN movements must have positive quantity")
+        elif self.movement_type == self.OUT and self.quantity >= 0:
+            raise ValidationError("Stock OUT movements must have negative quantity")
+
+    def save(self, *args, **kwargs):
+        """Override save to update stock and product quantities."""
+        self.clean()
+        
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            
+            # Update stock entry if specified
+            if self.stock:
+                self.stock.quantity += self.quantity
+                if self.stock.quantity < 0:
+                    raise ValidationError(f"Stock batch {self.stock.batch_no} would have negative quantity")
+                # Save stock without triggering product update (we'll do it once at the end)
+                self.stock.save(skip_product_update=True)
+            
+            # Update product quantity once at the end
+            self.product.update_quantity_from_stock()
+
+    def __str__(self):
+        sign = "+" if self.quantity > 0 else ""
+        return f"{self.product.sku} | {self.get_movement_type_display()} | {sign}{self.quantity}"
+
+    @property
+    def total_value(self):
+        """Calculate total value of this movement."""
+        if self.unit_cost:
+            return abs(self.quantity) * self.unit_cost
+        return None

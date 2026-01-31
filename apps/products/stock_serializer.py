@@ -9,6 +9,10 @@ class StockSerializer(serializers.ModelSerializer):
     product_sku = serializers.CharField(source='product.sku', read_only=True)
     is_expired = serializers.SerializerMethodField(read_only=True)
     days_to_expiry = serializers.SerializerMethodField(read_only=True)
+    
+    # Optional fields for movement tracking
+    reference = serializers.CharField(max_length=100, required=False, write_only=True)
+    note = serializers.CharField(required=False, write_only=True)
 
     class Meta:
         model = Stock
@@ -16,6 +20,7 @@ class StockSerializer(serializers.ModelSerializer):
             'id', 'product', 'product_name', 'product_sku',
             'batch_no', 'expiry_date', 'quantity', 'unit_cost',
             'location', 'is_active', 'is_expired', 'days_to_expiry',
+            'reference', 'note',  # Added for movement tracking
             'created_at', 'updated_at'
         ]
         read_only_fields = [
