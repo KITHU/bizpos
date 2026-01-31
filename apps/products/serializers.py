@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.db.models import Sum
 from typing import Union
-from .models import Category, Product, Stock
+from .models import Category, Product, Stock, StockMovement
 from .stock_serializer import StockSerializer
 
 
@@ -19,6 +19,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     """Detailed product serializer with stock info"""
     category_name = serializers.CharField(source='category.name', read_only=True)
     stock_entries = StockSerializer(many=True, read_only=True)
+    recent_movements = serializers.SerializerMethodField(read_only=True)
     total_stock = serializers.SerializerMethodField(read_only=True)
     profit_margin = serializers.SerializerMethodField(read_only=True)
     is_low_stock = serializers.SerializerMethodField(read_only=True)
@@ -34,14 +35,21 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             'quantity', 'reorder_level', 'unit', 'pack_size',
             'taxable', 'discount_percent', 'is_special', 'is_online', 'is_active',
             'total_stock', 'available_stock', 'profit_margin', 'is_low_stock', 
-            'discounted_price', 'stock_entries',
+            'discounted_price', 'stock_entries', 'recent_movements',
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'created_at', 'updated_at', 'sku',
             'total_stock', 'available_stock', 'profit_margin',
-            'is_low_stock', 'discounted_price', 'category_name', 'stock_entries'
+            'is_low_stock', 'discounted_price', 'category_name', 
+            'stock_entries', 'recent_movements'
         ]
+
+    def get_recent_movements(self, obj: Product) -> list:
+        """Return last 5 stock movements for this product"""
+        from .movement_serializer import StockMovementSerializer
+        recent = obj.movements.all()[:5]
+        return StockMovementSerializer(recent, many=True).data
 
     def get_total_stock(self, obj: Product) -> int:
         return obj.stock_entries.filter(is_active=True).aggregate(
@@ -91,14 +99,14 @@ class ProductCreateUpdateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Product
-        # Only include fields users can provide
+        # Only include fields users can provide (excluding quantity - use stock operations instead)
         fields = [
             'barcode', 'name', 'description', 'category',
             'unit_cost', 'least_selling_price', 'wholesale_price', 'retail_price',
-            'quantity', 'reorder_level', 'unit', 'pack_size',
+            'reorder_level', 'unit', 'pack_size',
             'taxable', 'discount_percent', 'is_special', 'is_online', 'is_active'
         ]
-        # All fields are writable; SKU is generated automatically
+        # All fields are writable; SKU and quantity are managed automatically
         extra_kwargs = {
             'barcode': {'required': False, 'allow_blank': True, 'allow_null': True},
             'description': {'required': False, 'allow_blank': True, 'allow_null': True},
