@@ -133,18 +133,18 @@ class Product(TimestampedModel):
         ]
         constraints = [
             models.CheckConstraint(
-                check=models.Q(unit_cost__gte=0) &
+                condition=models.Q(unit_cost__gte=0) &
                       models.Q(least_selling_price__gte=0) &
                       models.Q(wholesale_price__gte=0) &
                       models.Q(retail_price__gte=0),
                 name='prices_non_negative'
             ),
             models.CheckConstraint(
-                check=models.Q(pack_size__gt=0),
+                condition=models.Q(pack_size__gt=0),
                 name='pack_size_positive'
             ),
             models.CheckConstraint(
-                check=models.Q(quantity__gte=0),
+                condition=models.Q(quantity__gte=0),
                 name='quantity_non_negative'
             ),
         ]
@@ -410,8 +410,8 @@ class Stock(TimestampedModel):
             models.Index(fields=['batch_no']),
         ]
         constraints = [
-            models.CheckConstraint(check=models.Q(quantity__gte=0), name='stock_quantity_non_negative'),
-            models.CheckConstraint(check=models.Q(unit_cost__gte=0), name='stock_unit_cost_non_negative'),
+            models.CheckConstraint(condition=models.Q(quantity__gte=0), name='stock_quantity_non_negative'),
+            models.CheckConstraint(condition=models.Q(unit_cost__gte=0), name='stock_unit_cost_non_negative'),
         ]
 
     def save(self, *args, **kwargs):
@@ -517,7 +517,7 @@ class StockMovement(TimestampedModel):
         ]
         constraints = [
             models.CheckConstraint(
-                check=~models.Q(quantity=0),
+                condition=~models.Q(quantity=0),
                 name='movement_quantity_not_zero'
             ),
         ]
